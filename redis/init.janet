@@ -7,14 +7,11 @@
   [name arguments &keys {:flags flags}]
   (with-syms [$result]
     ~(defn ,name ,(tuple 'stream ;arguments)
-       (net/write stream (protocol/encode ',name ,;arguments))
-       (def ,$result ((fn read-to-end []
-                        (def bufsz 0xff)
-                        (def result (net/read stream bufsz))
-                        (if (= (length result) bufsz)
-                          (buffer result (read-to-end))
-                          result))))
-       (protocol/decode ,$result))))
+       # (net/write stream (protocol/encode :values ',name ,;arguments))
+       (let [x (protocol/encode :values ',name ,;arguments)]
+         (net/write stream x))
+       (def ,$result (protocol/decode-stream stream))
+       ,$result)))
 
 (redis-command SET [key value])
 (redis-command GET [key])

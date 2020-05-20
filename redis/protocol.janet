@@ -1,6 +1,6 @@
 
 (def- sep "\r\n")
-(def bufsz 0xff)
+(def bufsz 0xffff)
 
 # @"+OK\r\n"
 # @"$5\r\nthere\r\n"
@@ -60,10 +60,77 @@
               (var buf (buffer "*" (strlen rest)))
               (each item rest
                 (set buf (buffer buf sep "$" (strlen item) sep (string item))))
-              (string buf sep))))
+              (pp ["QQ" (string buf sep)])
+              (string buf sep))
+    _ (error "fall-through")))
 
-(defn read-to-end [stream]
-  (def result (net/read stream bufsz))
-  (if (= (length result) bufsz)
-    (buffer result (read-to-end stream))
-    result))
+(defn read-while [stream func]
+  (var accumulator @"")
+  (var last "")
+  (while (let [nxt (net/read stream 1)
+               ok (func nxt)]
+           (set last nxt)
+           (when ok
+             (buffer/push-string accumulator (string nxt)))
+           ok)
+    0)
+  (pp [accumulator last])
+  [accumulator last]
+  )
+
+(defn decode-string-stream [stream]
+  (def [numstr lastchar] (read-while stream (fn [c]
+                                              (peg/match ~(% :d) c))))
+  (def num (scan-number numstr))
+  (assert num)
+  (assert (= "\r" (string lastchar)) (string/format "lastchar: %q" lastchar))
+  (let [nextc (string (net/read stream 1))]
+    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
+    )
+  (def accumulator (net/read stream num))
+  (assert (= "\r" (string (net/read stream 1))) (string/format "lastchar: %q" lastchar))
+  (let [nextc (string (net/read stream 1))]
+    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
+    )
+  accumulator)
+
+(defn decode-array-stream [stream]
+  (print "decode-array-stream")
+  (def [numstr lastchar] (read-while stream (fn [c]
+                                              (peg/match ~(% :d) c))))
+  (def num (scan-number numstr))
+  (assert num)
+  (assert (= "\r" (string lastchar)) (string/format "lastchar: %q" lastchar))
+  (let [nextc (string (net/read stream 1))]
+    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc)))
+  (def accumulator @[])
+  (for i 0 num
+    (assert (= "$" (string (net/read stream 1))))
+    (array/push accumulator (decode-string-stream stream))
+    (pp accumulator)
+    )
+  accumulator)
+
+(defn decode-ok-stream [stream]
+  (print "decode-ok-stream")
+  (assert (= "O" (string (net/read stream 1))))
+  (assert (= "K" (string (net/read stream 1))))
+  (assert (= "\r" (string (net/read stream 1))))
+  (assert (= "\n" (string (net/read stream 1))))
+  :ok)
+(defn decode-error-stream [stream]
+  (print "decode-error-stream")
+  (assert (not= "\r" (net/read 1)))
+  :error)
+
+(defn decode-stream [stream]
+  (print "decode-stream-0")
+  (let [fst (net/read stream 1)]
+    (print "decode-stream-1")
+    (case (string fst)
+      "*" (decode-array-stream stream)
+      "$" (decode-string-stream stream)
+      "+" (decode-ok-stream stream)
+      "-" (decode-error-stream stream)
+      (error (string/format "unexpected input: %q" fst))))
+  )
