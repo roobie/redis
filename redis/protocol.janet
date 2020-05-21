@@ -85,9 +85,9 @@
   (let [nextc (string (net/read stream 1))]
     (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
     )
-  (def accumulator (net/read stream num))
-  (assert (= "\r" (string (net/read stream 1))) (string/format "lastchar: %q" lastchar))
-  (let [nextc (string (net/read stream 1))]
+  (def accumulator (:read stream num))
+  (assert (= "\r" (string (:read stream 1))) (string/format "lastchar: %q" lastchar))
+  (let [nextc (string (:read stream 1))]
     (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
     )
   (if wrap
