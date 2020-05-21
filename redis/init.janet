@@ -1,7 +1,7 @@
 
 #(import ./commands :export true)
 
-(import ./protocol)
+(import ./old_protocol :as protocol)
 
 (defmacro redis-command
   [name arguments &keys {:flags flags}]

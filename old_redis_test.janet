@@ -1,6 +1,6 @@
 (import ../redis :as r)
 
-(import ../redis/protocol :as p)
+(import ../redis/old_protocol :as p)
 
 (let [a (p/decode-string "$4\r\nABCD\r\n")]
   (assert (= "ABCD" (string a))))
