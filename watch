@@ -1,4 +1,2 @@
-#!/usr/bin/env sh
-
-pkill -xf 'jpm test'
-jpm test
+#!/bin/env sh
+ls test/* |entr jpm test

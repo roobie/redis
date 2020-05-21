@@ -32,6 +32,7 @@
   (assert (= "+OK\r\n" (string okstring)))
   (assert (= "-$5\r\nERR 1\r\n" (string errstring)))
   (assert (= "$4\r\nasdf\r\n" (string strstring)))
+  (pp arrstring)
   (assert (= "*2\r\n$0\r\n\r\n$1\r\nA\r\n" arrstring))
   (assert (= "*2\r\n$0\r\n\r\n$1\r\nA\r\n" arrstring2)))
 

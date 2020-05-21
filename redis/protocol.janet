@@ -35,31 +35,33 @@
     (when-let [result (peg/match err-pattern redis-message)]
       [:error ;result])
     (when-let [result (peg/match ok-pattern redis-message)]
-      :ok)
+      :ok) # should this also be a tuple (with one item)?
     (when-let [result (peg/match array-pattern redis-message)]
       [:array (decode-array redis-message)])
     (when-let [result (peg/match string-pattern redis-message)]
       [:buffer (decode-string redis-message)])
-    (error "fall through")
-    )
-  )
+    (error (string/format "Fall through! Don't know how to handle redis-message=%m" redis-message))
+    ))
+
+(defn strlen [v]
+  "base 10 length of v as string"
+  (string (length v)))
+
+(defn encode-string [str]
+  (buffer "$" (strlen str) sep (string str) sep))
 
 (defn encode [what & rest]
-  (defn strlen [v] (string (length v)))
-  # TODO not pretty. Would be nice with a recursive function
   (match what
     :ok "+OK\r\n"
-    :string (do # TODO move to own func
-              (def item (in rest 0))
-              (buffer "$" (strlen item) sep (string item) sep))
+    :string (encode-string (in rest 0))
     :error (string "-" (encode :string (in rest 0)))
     :array (encode :values ;(get rest 0))
     :values (do
-              (var buf (buffer "*" (strlen rest)))
+              (var buf (buffer "*" (strlen rest) sep))
               (each item rest
-                (set buf (buffer buf sep "$" (strlen item) sep (string item))))
-              (string buf sep))
-    _ (error "fall-through")))
+                (set buf (buffer buf (encode-string item))))
+              (string buf))
+    _ (error (string/format "Fall through! Don't know how to handle %m" what))))
 
 (defn read-while [stream func &opt chunk-size]
   (default chunk-size 1)
@@ -72,45 +74,43 @@
              (buffer/push-string accumulator (string nxt)))
            ok)
     0)
-  [accumulator last]
-  )
+  [accumulator last])
+
+(defn consume-assert= [stream expected]
+  (let [val (string (:read stream (length expected)))]
+    (assert (= val) (string/format "Expected %m but got %m" expected val))))
 
 (defn decode-string-stream [stream &opt wrap]
   (default wrap true)
-  (def [numstr lastchar] (read-while stream (fn [c]
-                                              (peg/match ~(% :d) c))))
-  (def num (scan-number numstr))
-  (assert num)
-  (assert (= "\r" (string lastchar)) (string/format "lastchar: %q" lastchar))
-  (let [nextc (string (net/read stream 1))]
-    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
-    )
+  (def [numstr lastchar]
+    (read-while stream (fn [c]
+                         (peg/match ~(% :d) c))))
+  (def num (assert (scan-number numstr)))
+
+  (assert (= "\r" (string lastchar)) (string/format "expected \\r lastchar: %q" lastchar))
+  (consume-assert= stream "\n")
+
   (def accumulator (:read stream num))
-  (assert (= "\r" (string (:read stream 1))) (string/format "lastchar: %q" lastchar))
-  (let [nextc (string (:read stream 1))]
-    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
-    )
+
+  (consume-assert= stream "\r\n")
+
   (if wrap
    [:buffer accumulator]
-   accumulator)
-  )
-  #accumulator)
-  # [:buffer accumulator])
+   accumulator))
 
 (defn decode-array-stream [stream]
   (def [numstr lastchar] (read-while stream (fn [c]
                                               (peg/match ~(% :d) c))))
-  (def num (scan-number numstr))
-  (assert num)
+  (def num (assert (scan-number numstr)))
   (assert (= "\r" (string lastchar)) (string/format "lastchar: %q" lastchar))
-  (let [nextc (string (net/read stream 1))]
-    (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc)))
+  (consume-assert= stream "\n")
+
   (def accumulator @[])
   (for i 0 num
     (assert (= "$" (string (net/read stream 1))))
-    (array/push accumulator (decode-string-stream stream false))
-    )
-  # accumulator)
+    ## the call to decode-string-stream should consume the last \r\n
+    (array/push accumulator (decode-string-stream stream false)))
+
   [:array accumulator])
 
 (defn decode-ok-stream [stream]
@@ -125,7 +125,7 @@
                          (peg/match ~(% (some (if-not "\r" 1))) c))))
   ## eat up the remaining delimiting chars
   (assert (= "\r" (string lastchar)))
-  (assert (= "\n" (string (:read stream 1))))
+  (consume-assert= stream "\n")
 
   [:error (string reststr)])
 
@@ -133,8 +133,8 @@
   (def [numstr lastchar] (read-while stream (fn [c]
                                             (peg/match ~(% :d) c))))
   (assert (= "\r" (string lastchar)))
-  (assert (= "\n" (string (:read stream 1))))
-  [:integer (scan-number numstr)])
+  (consume-assert= stream "\n")
+  [:integer (assert (scan-number numstr))])
 
 (defn decode-stream [stream]
   (let [fst (net/read stream 1)]
@@ -150,7 +150,7 @@
                                (peg/match ~(% (some (if-not "\r" 1))) c))))
         (pp [reststr lastchar])
         (assert (= "\r" (string lastchar)))
-        (assert (= "\n" (string (:read stream 1))))
+        (consume-assert= stream "\n")
         (error (string/format "unexpected input: %q" fst))
         )))
   )
