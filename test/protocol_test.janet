@@ -7,6 +7,7 @@
 (def host "127.0.0.1")
 (def port "45679")
 
+(comment
 # similar to/inspired by spork/rpc/server
 (defn server
   [&opt host port]
@@ -16,8 +17,8 @@
      [stream]
      (def buf @"")
      (defer (:close stream)
-       (def recv (msg/make-recv stream))
-       (def send (msg/make-send stream))
+       (def recv (p/make-recv stream))
+       (def send (p/make-send stream))
        (print "Client connected")
        (while (def msg (recv))
          (send "OK")))
@@ -27,16 +28,16 @@
 
 (defer (:close srv)
   (def client (net/connect host port))
-  (def recv (msg/make-recv client))
-  (def send (msg/make-send client))
+  (def recv (p/make-recv client))
+  (def send (p/make-send client))
   (send "asdf")
   (pp (recv))
   (send "asdf")
   (pp (recv))
 
   (def client2 (net/connect host port))
-  (def recv2 (msg/make-recv client))
-  (def send2 (msg/make-send client))
+  (def recv2 (p/make-recv client))
+  (def send2 (p/make-send client))
 
   (send2 "asdf")
   (pp (recv2))
@@ -87,3 +88,26 @@
 #       (send "1")
 #       (pp (recv))
 #       )))
+
+)
+
+(def srv (net/server
+          host port (fn handler
+                      [stream]
+                      (print "==")
+                      (def buf (buffer/new 8))
+                      (pp [:retval (p/decode-stream stream buf)])
+                      (pp [:mybuf buf])
+                      (print "==")
+                      )))
+
+(defn send-command [cmd]
+  (def client (net/connect host port))
+  (defer (:close client)
+    (:write client cmd)))
+(defer (:close srv)
+  (send-command "*3\r\n$-1\r\n:1\r\n$2\r\nAB\r\n")
+  (send-command "+OK\r\n")
+  (send-command "-ERR stuff did not go well\r\n")
+  (send-command ":40282\r\n")
+  )
