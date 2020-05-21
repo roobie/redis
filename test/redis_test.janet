@@ -5,6 +5,9 @@
 (let [a (p/decode-string "$4\r\nABCD\r\n")]
   (assert (= "ABCD" (string a))))
 
+(let [a (p/decode ":400\r\n")]
+  (assert (deep= [:integer 400] a)))
+
 (let [a (p/decode-array "*2\r\n$4\r\nABCD\r\n$8\r\nABCDEFGH\r\n")]
   (assert (deep= @["ABCD" "ABCDEFGH"] (map string a))))
 

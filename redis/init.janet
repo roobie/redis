@@ -16,6 +16,7 @@
 
 (redis-command SET [key value])
 (redis-command GET [key])
+(redis-command DEL [key])
 (redis-command HSET [key field value]) # ... [field value]
 (redis-command HGET [key field])
 (redis-command HDEL [key field])
