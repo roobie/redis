@@ -1,3 +1,4 @@
+# See https://redis.io/topics/protocol
 
 (def- sep "\r\n")
 (def bufsz 0xffff)
@@ -60,21 +61,22 @@
               (string buf sep))
     _ (error "fall-through")))
 
-(defn read-while [stream func]
+(defn read-while [stream func &opt chunk-size]
+  (default chunk-size 1)
   (var accumulator @"")
   (var last "")
-  (while (let [nxt (net/read stream 1)
+  (while (let [nxt (:read stream chunk-size)
                ok (func nxt)]
            (set last nxt)
            (when ok
              (buffer/push-string accumulator (string nxt)))
            ok)
     0)
-  (pp [accumulator last])
   [accumulator last]
   )
 
-(defn decode-string-stream [stream]
+(defn decode-string-stream [stream &opt wrap]
+  (default wrap true)
   (def [numstr lastchar] (read-while stream (fn [c]
                                               (peg/match ~(% :d) c))))
   (def num (scan-number numstr))
@@ -88,11 +90,14 @@
   (let [nextc (string (net/read stream 1))]
     (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
     )
-  accumulator)
+  (if wrap
+   [:buffer accumulator]
+   accumulator)
+  )
+  #accumulator)
   # [:buffer accumulator])
 
 (defn decode-array-stream [stream]
-  (print "decode-array-stream")
   (def [numstr lastchar] (read-while stream (fn [c]
                                               (peg/match ~(% :d) c))))
   (def num (scan-number numstr))
@@ -103,39 +108,49 @@
   (def accumulator @[])
   (for i 0 num
     (assert (= "$" (string (net/read stream 1))))
-    (array/push accumulator (decode-string-stream stream))
-    (pp accumulator)
+    (array/push accumulator (decode-string-stream stream false))
     )
-  accumulator)
-  #[:array accumulator])
+  # accumulator)
+  [:array accumulator])
 
 (defn decode-ok-stream [stream]
-  (print "decode-ok-stream")
   (assert (= "O" (string (net/read stream 1))))
   (assert (= "K" (string (net/read stream 1))))
   (assert (= "\r" (string (net/read stream 1))))
   (assert (= "\n" (string (net/read stream 1))))
   :ok)
 (defn decode-error-stream [stream]
-  (print "decode-error-stream")
-  (assert (not= "\r" (net/read stream 1)))
-  (def [str lastchar] (read-while stream (fn [c]
-                                            (peg/match ~(% (some (if-not "\r\n" 1))) c))))
-  (pp [:error str])
-  :error)
+  (def [reststr lastchar]
+    (read-while stream (fn [c]
+                         (peg/match ~(% (some (if-not "\r" 1))) c))))
+  ## eat up the remaining delimiting chars
+  (assert (= "\r" (string lastchar)))
+  (assert (= "\n" (string (:read stream 1))))
+
+  [:error (string reststr)])
+
+(defn decode-integer-stream [stream]
+  (def [numstr lastchar] (read-while stream (fn [c]
+                                            (peg/match ~(% :d) c))))
+  (assert (= "\r" (string lastchar)))
+  (assert (= "\n" (string (:read stream 1))))
+  [:integer (scan-number numstr)])
 
 (defn decode-stream [stream]
-  (print "decode-stream-0")
   (let [fst (net/read stream 1)]
-    (print "decode-stream-1")
     (case (string fst)
       "*" (decode-array-stream stream)
       "$" (decode-string-stream stream)
       "+" (decode-ok-stream stream)
       "-" (decode-error-stream stream)
-      ":" :fail
+      ":" (decode-integer-stream stream)
       (do
-        (pp [:what (:read stream 4)])
+        (def [reststr lastchar]
+          (read-while stream (fn [c]
+                               (peg/match ~(% (some (if-not "\r" 1))) c))))
+        (pp [reststr lastchar])
+        (assert (= "\r" (string lastchar)))
+        (assert (= "\n" (string (:read stream 1))))
         (error (string/format "unexpected input: %q" fst))
         )))
   )
