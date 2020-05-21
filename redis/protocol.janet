@@ -2,10 +2,6 @@
 (def- sep "\r\n")
 (def bufsz 0xffff)
 
-# @"+OK\r\n"
-# @"$5\r\nthere\r\n"
-# @"-ERR wrong number of arguments for 'hdel' command"
-
 (defn decode-string
   [str]
   (def strcapt (peg/match ~(* "$" (<- :d+) ,sep ($)) str))
@@ -36,13 +32,13 @@
 
   (or
     (when-let [result (peg/match err-pattern redis-message)]
-      (error result))
+      [:error ;result])
     (when-let [result (peg/match ok-pattern redis-message)]
       :ok)
     (when-let [result (peg/match array-pattern redis-message)]
-      (decode-array redis-message))
+      [:array (decode-array redis-message)])
     (when-let [result (peg/match string-pattern redis-message)]
-      (decode-string redis-message))
+      [:buffer (decode-string redis-message)])
     (error "fall through")
     )
   )
@@ -56,11 +52,11 @@
               (def item (in rest 0))
               (buffer "$" (strlen item) sep (string item) sep))
     :error (string "-" (encode :string (in rest 0)))
+    :array (encode :values ;(get rest 0))
     :values (do
               (var buf (buffer "*" (strlen rest)))
               (each item rest
                 (set buf (buffer buf sep "$" (strlen item) sep (string item))))
-              (pp ["QQ" (string buf sep)])
               (string buf sep))
     _ (error "fall-through")))
 
@@ -93,6 +89,7 @@
     (assert (= "\n" nextc) (string/format "expected \\n, got %q" nextc))
     )
   accumulator)
+  # [:buffer accumulator])
 
 (defn decode-array-stream [stream]
   (print "decode-array-stream")
@@ -110,6 +107,7 @@
     (pp accumulator)
     )
   accumulator)
+  #[:array accumulator])
 
 (defn decode-ok-stream [stream]
   (print "decode-ok-stream")
@@ -120,7 +118,10 @@
   :ok)
 (defn decode-error-stream [stream]
   (print "decode-error-stream")
-  (assert (not= "\r" (net/read 1)))
+  (assert (not= "\r" (net/read stream 1)))
+  (def [str lastchar] (read-while stream (fn [c]
+                                            (peg/match ~(% (some (if-not "\r\n" 1))) c))))
+  (pp [:error str])
   :error)
 
 (defn decode-stream [stream]
@@ -132,5 +133,9 @@
       "$" (decode-string-stream stream)
       "+" (decode-ok-stream stream)
       "-" (decode-error-stream stream)
-      (error (string/format "unexpected input: %q" fst))))
+      ":" :fail
+      (do
+        (pp [:what (:read stream 4)])
+        (error (string/format "unexpected input: %q" fst))
+        )))
   )

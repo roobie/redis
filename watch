@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+
+pkill -xf 'jpm test'
+jpm test

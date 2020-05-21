@@ -7,3 +7,7 @@
  :repo "git+https://github.com/roobie/redis.git")
 
 (declare-source :source ["redis"])
+
+(phony "watch" []
+       (do
+         (os/shell "fswatch -o . | xargs -n1 -I{} ./watch")))

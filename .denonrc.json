@@ -1,0 +1,35 @@
+{
+    "files": [
+      "test/redis_test.janet"
+    ],
+    "quiet": false,
+    "debug": true,
+    "fullscreen": false,
+    "extensions": [
+        ".janet",
+        ".js",
+        ".ts",
+        ".py",
+        ".html",
+        ".css",
+        ".less",
+        ".json"
+    ],
+    "interval": 500,
+    "watch": [
+      "./",
+      "../redis/"
+    ],
+    "deno_args":[
+        "--allow-net",
+        "--allow-read"
+    ],
+    "execute": {
+        ".janet": ["jpm test #"],
+        ".js": ["deno", "run"],
+        ".ts": ["deno", "run"],
+        ".py": ["python"]
+    },
+    "fmt": true,
+    "test": true
+}
