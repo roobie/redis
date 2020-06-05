@@ -1,168 +1,127 @@
-# See https://redis.io/topics/protocol
+# This file is an attempt at a streaming codec for the redis protocol.
 
-(def- sep "\r\n")
-(def bufsz 0xffff)
+# This is the default buffer size used for pre-allocating buffers when decoding
+# responses. It is arbitrarily chosen, and at the time of writing, no benchmarks
+# or other sorts of profiling has been done to determine whether it is a good
+# number or not.
+(def default-buffer-size 256)
 
-(defn decode-string
-  [str]
-  (def strcapt (peg/match ~(* "$" (<- :d+) ,sep ($)) str))
-  (def strlen (assert (scan-number (in strcapt 0))))
-  (def pos (in strcapt 1))
-  (buffer/slice str pos (+ pos strlen)))
+# Here's ASCII constants for the named characters. They are used in the protocol
+# to signal types, lengths and delimitations of data.
+(def ASTERISK 42)
+(def DOLLAR 36)
+(def COLON 58)
+(def MINUS 45)
+(def PLUS 43)
+(def CR 13)
+(def LF 13)
 
-(defn decode-array
-  [str]
-  (def captures (peg/match ~(* "*" (<- :d+) ,sep ($)) str))
-  (def alen (assert (scan-number (in captures 0))))
-  (var pos (in captures 1))
-  (def results @[])
-  (for i 0 alen
-    (def strcapt (peg/match ~(* ,pos "$" (<- :d+) ,sep ($)) str))
-    (def strlen (assert (scan-number (in strcapt 0))))
-    (set pos (in strcapt 1))
-    (array/push results (buffer/slice str pos (+ pos strlen)))
-    (set pos (+ (in strcapt 1) strlen (length sep))))
-  results)
+# This variable is exported (leaky, but yeah.) so e.g. tests can enable
+# assertions.
+(var DEBUG false)
+(defmacro assertpp
+  "This is a helper macro that asserts the form (ie. that it is not falsy)
+and pretty prints it in the error message."
+  [form]
+  (if DEBUG
+    ~(assert ,form (string/format "Form %M was nil" ',form))
+      form))
 
-(defn decode [redis-message]
-  (def ok-pattern ~(* "+OK" ,sep -1))
-  (def err-pattern ~(* "-" (<- (some (if-not ,sep 1))) ,sep -1))
-  (def string-pattern ~(* "$" :d+ ,sep))
-  (def integer-pattern ~(* ":" (<- :d+) ,sep -1))
-  (def array-pattern ~(* "*" :d+ ,sep))
+(defn read-number
+  "Decodes the next number from the stream. Returns a tuple where the first
+element is the news index and the second is the decoded number. If debug is
+enabled, will assert that the element is a number."
+  [stream buf start-index]
+  (var index start-index)
+  (var num 0)
+  (while true
+    (:chunk stream 1 buf)
+    (when (= CR (in buf index))
+      (let [numend index]
+        (set index (inc index))
+        (set num (assertpp
+                  (scan-number (buffer/slice buf start-index numend))))
+        (break)))
+    (set index (inc index)))
+  [index num])
 
-  (or
-    (when-let [result (peg/match err-pattern redis-message)]
-      [:error ;result])
-    (when-let [result (peg/match ok-pattern redis-message)]
-      :ok) # should this also be a tuple (with one item)?
-    (when-let [result (peg/match integer-pattern redis-message)]
-      [:integer (assert (scan-number (in result 0)))])
-    (when-let [result (peg/match array-pattern redis-message)]
-      [:array (decode-array redis-message)])
-    (when-let [result (peg/match string-pattern redis-message)]
-      [:buffer (decode-string redis-message)])
-    (error (string/format "Fall through! Don't know how to handle redis-message=%m" redis-message))
-    ))
+(defn read-string
+  [stream buf value-length]
+  (def valbuf (buffer/new value-length))
+  (:chunk stream value-length valbuf)
+  valbuf)
 
-(defn strlen [v]
-  "base 10 length of v as string"
-  (string (length v)))
-
-(defn encode-string [str]
-  (buffer "$" (strlen str) sep (string str) sep))
-
-(defn encode [what & rest]
-  (match what
-    :ok "+OK\r\n"
-    :nil "$-1\r\n"
-    :string (encode-string (in rest 0))
-    :error (string "-" (encode :string (in rest 0)))
-    :array (encode :values ;(get rest 0))
-    :values (do
-              # TODO don't create a lotta buffers here. Use one and mutate that.
-              (var buf (buffer "*" (strlen rest) sep))
-              (each item rest
-                (set buf (buffer buf (encode-string item))))
-              (string buf))
-    _ (error (string/format "Fall through! Don't know how to handle %m" what))))
-
-(defn read-while [stream func &opt chunk-size]
-  (default chunk-size 1)
-  (var accumulator @"")
-  (var last "")
-  (while (let [nxt (:read stream chunk-size)
-               ok (func nxt)]
-           (set last nxt)
-           (when ok
-             (buffer/push-string accumulator (string nxt)))
-           ok)
-    0)
-  [accumulator last])
-
-(defn consume-assert= [stream expected]
-  (printf "Assert next chars in stream: %m" expected)
-  (let [val (string (:read stream (length expected)))]
-    (assert (= val) (string/format "Expected %m but got %m" expected val))))
-
-(defn decode-string-stream [stream &opt wrap]
-  (pp [:decode-string-stream])
-  (default wrap true)
-  (def [numstr lastchar]
-    (read-while stream (fn [c]
-                         (peg/match '(% :d) c))))
-  (def num (assert (scan-number numstr)))
-
-  (assert (= "\r" (string lastchar)) (string/format "expected \\r lastchar: %q" lastchar))
-  (consume-assert= stream "\n")
-
-  (def accumulator (:read stream num))
-
-  (consume-assert= stream "\r\n")
-
-  (if wrap
-   [:buffer accumulator]
-   accumulator))
-
-(defn decode-array-stream [stream]
-  (pp [:decode-array-stream])
-  (def [numstr lastchar] (read-while stream (fn [c]
-                                              (peg/match '(% :d) c))))
-  (def num (assert (scan-number numstr)))
-  (assert (= "\r" (string lastchar)) (string/format "lastchar: %q" lastchar))
-  (consume-assert= stream "\n")
-
-  (def accumulator @[])
-  (for i 0 num
-    (assert (= "$" (string (net/read stream 1))))
-    ## the call to decode-string-stream should consume the last \r\n
-    (array/push accumulator (decode-string-stream stream false)))
-
-  [:array accumulator])
-
-(defn decode-ok-stream [stream]
-  (pp [:decode-ok-stream])
-  (consume-assert= stream "OK\r\n")
-  :ok)
-(defn decode-error-stream [stream]
-  (pp [:decode-error-stream])
-  (def [reststr lastchar]
-    (read-while stream (fn [c]
-                         (peg/match '(% (some (if-not "\r" 1))) c))))
-  ## eat up the remaining delimiting chars
-  (assert (= "\r" (string lastchar)))
-  (consume-assert= stream "\n")
-
-  [:error (string reststr)])
-
-(defn decode-integer-stream [stream]
-  (pp [:decode-integer-stream])
-  (def [numstr lastchar] (read-while stream (fn [c]
-                                            (peg/match '(% :d) c))))
-  (assert (= "\r" (string lastchar)))
-  (consume-assert= stream "\n")
-  [:integer (assert (scan-number numstr))])
-
-(defn decode-stream [stream]
-  (let [fst (net/read stream 1)]
-    (case (string fst)
-      "*" (decode-array-stream stream)
-      "$" (decode-string-stream stream)
-      "+" (decode-ok-stream stream)
-      "-" (decode-error-stream stream)
-      ":" (decode-integer-stream stream)
+(defn read-simple-string
+  [stream buf start-index]
+  (var index start-index)
+  (var numend start-index)
+  (while true
+    (:chunk stream 1 buf)
+    (when (= CR (in buf index))
       (do
-        (if (nil? fst)
-          nil
-          (do
-        (def [reststr lastchar]
-          (read-while
-           stream (fn [c]
-                    (if (nil? c) nil
-                        (peg/match ~(% (some (if-not "\r" 1))) c)))))
-        (pp [:unknown reststr lastchar])
-        #(assert (= "\r" (string lastchar)))
-        #(consume-assert= stream "\n")
-        (error (string/format "unexpected input: %q" fst))
-        )))))
-  )
+        (set numend index)
+        (set index (inc index))
+        (break)))
+    (set index (inc index)))
+  (string (buffer/slice buf start-index numend)))
+
+(defn decode-stream
+  "Note: the contents of `buf` are not to be used. It will not contain
+the full message, but will contain jibberish."
+  [stream &opt buf]
+  (default buf (buffer/new default-buffer-size))
+  (var index 0)
+  (var array-value nil)
+  (var simple-value nil)
+  (var is-error false)
+  (while true
+    (let [c (:chunk stream 1 buf)]
+      (when (nil? c) (break)) # end of stream, it seems
+
+      # Here we dispatch on the next character. The redis protocol defines
+      # a couple of special chars (that we have defined the ASCII byte values
+      # for above) that we check and dispatch on.
+      (case (in buf index)
+
+        # A plus indicates a simple string
+        PLUS (let [val (read-simple-string stream buf (inc index))]
+               (set simple-value val)
+               (break))
+
+        # A minus is like a simple string, but indicates that there was
+        # an error. Otherwise nothing special.
+        MINUS (let [val (read-simple-string stream buf (inc index))]
+                (set is-error true)
+                (set simple-value val)
+                (break))
+
+        # An asterisk indicates an sequence of values. Each element could be
+        # any sort of value, theoretically, but I think the protocol dictates
+        # that element are other type than sequences. Don't quote me on that tho.
+        ASTERISK (let [[new-index len] (read-number stream buf (inc index))]
+                   (set array-value @[])
+                   (set index new-index))
+
+        # A colon indicates a number.
+        COLON (let [[new-index numbr] (read-number stream buf (inc index))]
+                (set index new-index)
+                (if array-value
+                  (array/push array-value numbr)
+                  (do
+                    (set simple-value numbr)
+                    (break))))
+
+        # A dollar indicates binary data of arbitrary length.
+        DOLLAR (let [[new-index len] (read-number stream buf (inc index))]
+                 (set index new-index)
+                 (if (= len -1) # if the length is -1, that indicates nil
+                   (array/push array-value nil)
+                   (let [_ (:chunk stream 1 buf) # discard the remaining LF
+                         value (read-string stream buf len)]
+                     (array/push array-value (string value)))))
+        # Default, just increment index
+        (++ index))
+      ))
+  {:is-error is-error
+   :data (or array-value
+             simple-value)})

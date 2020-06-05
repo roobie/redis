@@ -1,2 +1,2 @@
 #!/bin/env sh
-ls test/* |entr jpm test
+find ./ -type f -name "*.janet" | sort | uniq | entr jpm test
