@@ -25,20 +25,20 @@
 
 (run-1
  "*3\r\n$-1\r\n:1\r\n$2\r\nAB\r\n"
- @[nil 1 "AB"])
+ {:is-error false :data @[nil 1 "AB"]})
 (run-1
  "+OK\r\n"
- "OK")
+ {:is-error false :data "OK"})
 (run-1
  "-ERR stuff did not go well\r\n"
- "ERR stuff did not go well")
+ {:is-error true :data "ERR stuff did not go well"})
 (run-1
  ":40282\r\n"
- 40282)
+ {:is-error false :data 40282})
 
 (do
   (def strlen 1024)
   (def str (string/repeat "A" strlen))
   (run-1
    (string "*1\r\n$"strlen"\r\n"str"\r\n")
-   @[str]))
+   {:is-error false :data @[str]}))

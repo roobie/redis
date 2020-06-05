@@ -71,7 +71,9 @@ the full message, but will contain jibberish."
   [stream &opt buf]
   (default buf (buffer/new default-buffer-size))
   (var index 0)
-  (def state @{:items nil :simple-value nil})
+  (var array-value nil)
+  (var simple-value nil)
+  (var is-error false)
   (while true
     (let [c (:chunk stream 1 buf)]
       (when (nil? c) (break)) # end of stream, it seems
@@ -83,42 +85,43 @@ the full message, but will contain jibberish."
 
         # A plus indicates a simple string
         PLUS (let [val (read-simple-string stream buf (inc index))]
-               (put state :simple-value val)
+               (set simple-value val)
                (break))
 
         # A minus is like a simple string, but indicates that there was
         # an error. Otherwise nothing special.
         MINUS (let [val (read-simple-string stream buf (inc index))]
-                (put state :error true)
-                (put state :simple-value val)
+                (set is-error true)
+                (set simple-value val)
                 (break))
 
         # An asterisk indicates an sequence of values. Each element could be
         # any sort of value, theoretically, but I think the protocol dictates
         # that element are other type than sequences. Don't quote me on that tho.
         ASTERISK (let [[new-index len] (read-number stream buf (inc index))]
-                   (put state :items @[])
+                   (set array-value @[])
                    (set index new-index))
 
         # A colon indicates a number.
         COLON (let [[new-index numbr] (read-number stream buf (inc index))]
                 (set index new-index)
-                (if-let [items (get state :items)]
-                  (array/push items numbr)
+                (if array-value
+                  (array/push array-value numbr)
                   (do
-                    (put state :simple-value numbr)
+                    (set simple-value numbr)
                     (break))))
 
         # A dollar indicates binary data of arbitrary length.
         DOLLAR (let [[new-index len] (read-number stream buf (inc index))]
                  (set index new-index)
                  (if (= len -1) # if the length is -1, that indicates nil
-                   (array/push (in state :items) nil)
+                   (array/push array-value nil)
                    (let [_ (:chunk stream 1 buf) # discard the remaining LF
                          value (read-string stream buf len)]
-                     (array/push (in state :items) (string value)))))
+                     (array/push array-value (string value)))))
         # Default, just increment index
         (++ index))
       ))
-  (or (state :items)
-      (state :simple-value)))
+  {:is-error is-error
+   :data (or array-value
+             simple-value)})
