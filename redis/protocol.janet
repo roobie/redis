@@ -1,34 +1,13 @@
+# This file is an attempt at a streaming codec for the redis protocol.
 
-## Based on the spork/msg implementation
-
-(defn make-recv
-  [stream &opt unpack]
-  (def buf @"")
-  (default unpack string)
-  (fn receiver []
-    (buffer/clear buf)
-    (if-not (:chunk stream 4 buf) (break))
-    (def [b0 b1 b2 b3] buf)
-    (def len (+ b0 (* b1 0x100) (* b2 0x10000) (* b3 0x1000000)))
-    (buffer/clear buf)
-    (if-not (:chunk stream len buf) (break))
-    (pp [:read buf])
-    (unpack (string buf))))
-
-(defn make-send
-  [stream &opt pack]
-  (def buf @"")
-  (default pack string)
-  (fn sender [msg]
-    (def x (pack msg))
-    (buffer/clear buf)
-    (buffer/push-word buf (length x))
-    (buffer/push-string buf x)
-    (pp [:write buf])
-    (:write stream buf)
-    nil))
-
+# This is the default buffer size used for pre-allocating buffers when decoding
+# responses. It is arbitrarily chosen, and at the time of writing, no benchmarks
+# or other sorts of profiling has been done to determine whether it is a good
+# number or not.
 (def default-buffer-size 256)
+
+# Here's ASCII constants for the named characters. They are used in the protocol
+# to signal types, lengths and delimitations of data.
 (def ASTERISK 42)
 (def DOLLAR 36)
 (def COLON 58)
@@ -37,14 +16,21 @@
 (def CR 13)
 (def LF 13)
 
-(def DEBUG true)
+# This variable is exported (leaky, but yeah.) so e.g. tests can enable
+# assertions.
+(var DEBUG false)
 (defmacro assertpp
+  "This is a helper macro that asserts the form (ie. that it is not falsy)
+and pretty prints it in the error message."
   [form]
   (if DEBUG
     ~(assert ,form (string/format "Form %M was nil" ',form))
-    form))
+      form))
 
 (defn read-number
+  "Decodes the next number from the stream. Returns a tuple where the first
+element is the news index and the second is the decoded number. If debug is
+enabled, will assert that the element is a number."
   [stream buf start-index]
   (var index start-index)
   (var num 0)
@@ -80,25 +66,41 @@
   (string (buffer/slice buf start-index numend)))
 
 (defn decode-stream
-  "Note: the contents of `buf` are not to be used. It will not contain the full message."
+  "Note: the contents of `buf` are not to be used. It will not contain
+the full message, but will contain jibberish."
   [stream &opt buf]
   (default buf (buffer/new default-buffer-size))
   (var index 0)
-  (def state @{:array-length nil :items nil :simple-value nil})
+  (def state @{:items nil :simple-value nil})
   (while true
     (let [c (:chunk stream 1 buf)]
-      (when (nil? c) (break))
+      (when (nil? c) (break)) # end of stream, it seems
+
+      # Here we dispatch on the next character. The redis protocol defines
+      # a couple of special chars (that we have defined the ASCII byte values
+      # for above) that we check and dispatch on.
       (case (in buf index)
+
+        # A plus indicates a simple string
         PLUS (let [val (read-simple-string stream buf (inc index))]
                (put state :simple-value val)
                (break))
+
+        # A minus is like a simple string, but indicates that there was
+        # an error. Otherwise nothing special.
         MINUS (let [val (read-simple-string stream buf (inc index))]
-               (put state :simple-value val)
-               (break))
+                (put state :error true)
+                (put state :simple-value val)
+                (break))
+
+        # An asterisk indicates an sequence of values. Each element could be
+        # any sort of value, theoretically, but I think the protocol dictates
+        # that element are other type than sequences. Don't quote me on that tho.
         ASTERISK (let [[new-index len] (read-number stream buf (inc index))]
                    (put state :items @[])
-                   (set index new-index)
-                   (put state :array-length len))
+                   (set index new-index))
+
+        # A colon indicates a number.
         COLON (let [[new-index numbr] (read-number stream buf (inc index))]
                 (set index new-index)
                 (if-let [items (get state :items)]
@@ -106,28 +108,17 @@
                   (do
                     (put state :simple-value numbr)
                     (break))))
+
+        # A dollar indicates binary data of arbitrary length.
         DOLLAR (let [[new-index len] (read-number stream buf (inc index))]
                  (set index new-index)
-                 (if (= len -1)
+                 (if (= len -1) # if the length is -1, that indicates nil
                    (array/push (in state :items) nil)
                    (let [_ (:chunk stream 1 buf) # discard the remaining LF
                          value (read-string stream buf len)]
                      (array/push (in state :items) (string value)))))
         # Default, just increment index
-        (set index (inc index)))
+        (++ index))
       ))
-  state)
-
-(comment
- (def numstart (inc index))
- (while true
-   (:chunk stream 1 buf)
-   (when (= CR (in buf index))
-     (let [numend index]
-       (set index (inc index))
-       (def num (assertpp
-                 (scan-number (buffer/slice buf numstart numend))))
-       (put state :array-length num)
-       (break)))
-   (set index (inc index)))
- )
+  (or (state :items)
+      (state :simple-value)))
