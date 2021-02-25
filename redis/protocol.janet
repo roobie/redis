@@ -14,7 +14,7 @@
 (def MINUS 45)
 (def PLUS 43)
 (def CR 13)
-(def LF 13)
+(def LF 10)
 
 # This variable is exported (leaky, but yeah.) so e.g. tests can enable
 # assertions.
